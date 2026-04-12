@@ -184,6 +184,7 @@ Game_State :: struct {
 	volume:               f32,
 	quit_game:            bool,
 	save_timer:           f32,
+	show_fps:             bool,
 }
 
 // ---- Main ----
@@ -239,6 +240,11 @@ init_game :: proc(volume: f32) -> Game_State {
 
 update :: proc(s: ^Game_State, dt: f32) {
 	update_settings_menu(s, dt)
+
+	if rl.IsKeyPressed(.F11) {
+		s.show_fps = !s.show_fps
+	}
+
 	if s.paused do return
 
 	if s.game_over {
@@ -716,6 +722,9 @@ draw :: proc(s: ^Game_State, player_sheet: rl.Texture2D, enemy_sheet: rl.Texture
 	// HUD
 	// ---- HUD ----
 	rl.DrawText(rl.TextFormat("SCORE %d", s.score), 10, 10, 20, rl.WHITE)
+	if s.show_fps {
+		rl.DrawFPS(SCREEN_WIDTH - 80, 10)
+	}
 
 	// Lives — bottom left, 24×24 ship sprites
 	LIFE_SIZE :: i32(24)
