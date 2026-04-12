@@ -7,7 +7,7 @@ SCREEN_WIDTH :: 800
 SCREEN_HEIGHT :: 1080
 TITLE :: "Swarm"
 
-PLAYER_SPEED :: 200
+PLAYER_SPEED :: 220
 PLAYER_SIZE :: 48 // display width and hitbox
 PLAYER_H :: 64 // display height (sprite is 48×64)
 PLAYER_HALF :: PLAYER_SIZE / 2
@@ -42,12 +42,12 @@ DRIFT_PERIOD :: 4.0
 
 MAX_ENEMY_BULLETS :: 20
 ENEMY_BULLET_SPEED :: 270.0
-ENEMY_FIRE_MIN :: 1.5
-ENEMY_FIRE_MAX :: 4.5
+ENEMY_FIRE_MIN :: 2.5
+ENEMY_FIRE_MAX :: 6.5
 
 DIVE_SPEED :: 340.0
-DIVE_FIRE_MIN :: 0.35
-DIVE_FIRE_MAX :: 0.75
+DIVE_FIRE_MIN :: 0.6
+DIVE_FIRE_MAX :: 1.2
 DIVE_TIMER_MIN :: 5.0
 DIVE_TIMER_MAX :: 14.0
 MAX_ACTIVE_DIVERS :: 2
@@ -122,6 +122,13 @@ Player_Bullet :: struct {
 	alive:      bool,
 }
 
+Enemy_Variant :: enum {
+	Standard,
+	Aggressive,
+	Heavy,
+	Burst,
+}
+
 Enemy :: struct {
 	pos:         rl.Vector2,
 	slot:        rl.Vector2,
@@ -136,6 +143,9 @@ Enemy :: struct {
 	dive_timer:  f32,
 	dive_vel:    rl.Vector2,
 	wave:        int,
+	variant:     Enemy_Variant,
+	burst_count: int,
+	burst_timer: f32,
 }
 
 Enemy_Bullet :: struct {
@@ -382,6 +392,19 @@ update :: proc(s: ^Game_State, dt: f32) {
 
 	for &e in s.enemies {
 		if !e.alive do continue
+
+		// Small burst logic
+		if e.burst_count > 0 {
+			e.burst_timer -= dt
+			if e.burst_timer <= 0 {
+				fire_enemy_bullet(&s.enemy_bullets, e.pos, s.player.pos)
+				e.burst_count -= 1
+				if e.burst_count > 0 {
+					e.burst_timer = 0.12
+				}
+			}
+		}
+
 		switch e.state {
 		case .Waiting:
 			e.enter_delay -= dt
@@ -401,7 +424,7 @@ update :: proc(s: ^Game_State, dt: f32) {
 			e.pos = {e.slot.x + drift_offset, e.slot.y}
 			e.fire_timer -= dt
 			if e.fire_timer <= 0 {
-				fire_enemy_bullet(&s.enemy_bullets, e.pos, s.player.pos)
+				enemy_fire(s, &e)
 				e.fire_timer = rand_fire_timer(e.wave)
 			}
 			if !s.player_dead {
@@ -417,7 +440,17 @@ update :: proc(s: ^Game_State, dt: f32) {
 						dx := s.player.pos.x - e.pos.x + f32(rl.GetRandomValue(-60, 60))
 						dy := s.player.pos.y - e.pos.y + 250 // aim past player
 						l := math.sqrt(dx * dx + dy * dy)
-						e.dive_vel = {dx / l * DIVE_SPEED, dy / l * DIVE_SPEED}
+
+						spd := f32(DIVE_SPEED)
+						switch e.variant {
+						case .Aggressive:
+							spd *= 1.4 // Fast Diver
+						case .Heavy:
+							spd *= 0.75 // Heavy Marksman is slower
+						case .Standard, .Burst:
+						}
+
+						e.dive_vel = {dx / l * spd, dy / l * spd}
 						e.fire_timer =
 							DIVE_FIRE_MIN +
 							f32(rl.GetRandomValue(0, 100)) /
@@ -434,8 +467,8 @@ update :: proc(s: ^Game_State, dt: f32) {
 			e.pos.x += e.dive_vel.x * dt
 			e.pos.y += e.dive_vel.y * dt
 			e.fire_timer -= dt
-			if e.fire_timer <= 0 {
-				fire_enemy_bullet(&s.enemy_bullets, e.pos, s.player.pos)
+			if e.fire_timer <= 0 && e.pos.y < s.player.pos.y {
+				enemy_fire(s, &e)
 				e.fire_timer =
 					DIVE_FIRE_MIN +
 					f32(rl.GetRandomValue(0, 100)) / 100.0 * (DIVE_FIRE_MAX - DIVE_FIRE_MIN)
@@ -788,6 +821,37 @@ draw :: proc(s: ^Game_State, player_sheet: rl.Texture2D, enemy_sheet: rl.Texture
 	rl.EndDrawing()
 }
 
+enemy_fire :: proc(s: ^Game_State, e: ^Enemy) {
+	switch e.variant {
+	case .Standard, .Aggressive:
+		fire_enemy_bullet(&s.enemy_bullets, e.pos, s.player.pos)
+	case .Heavy:
+		fire_enemy_bullet(&s.enemy_bullets, e.pos, s.player.pos)
+
+		dir := rl.Vector2Normalize(s.player.pos - e.pos)
+		angle := math.atan2(dir.y, dir.x)
+
+		for offset in ([]f32{-0.25, 0.25}) {
+			a := angle + offset
+			vel := rl.Vector2{math.cos(a) * ENEMY_BULLET_SPEED, math.sin(a) * ENEMY_BULLET_SPEED}
+			for &b in s.enemy_bullets {
+				if !b.alive {
+					b = {
+						pos   = e.pos,
+						vel   = vel,
+						alive = true,
+					}
+					break
+				}
+			}
+		}
+	case .Burst:
+		fire_enemy_bullet(&s.enemy_bullets, e.pos, s.player.pos)
+		e.burst_count = 2 // One more after this
+		e.burst_timer = 0.12
+	}
+}
+
 // Internal helper for powerup icons in HUD
 draw_powerup_icon_hud :: proc(x, y, size: i32, label: cstring, color: rl.Color, frac: f32) {
 	// Full colored background
@@ -835,7 +899,7 @@ POWERUP_WEIGHTS :: []int {
 	int(Powerup_Type.Double_Shot) = 20,
 	int(Powerup_Type.Score_Bonus) = 70,
 	int(Powerup_Type.Exploding_Shot) = 5,
-	int(Powerup_Type.Seeking_Shot) = 5,
+	int(Powerup_Type.Seeking_Shot) = 3,
 }
 
 drop_powerup :: proc(powerups: ^[MAX_POWERUPS]Powerup, pos: rl.Vector2) {
@@ -948,6 +1012,7 @@ init_formation :: proc(rows, wave: int) -> [MAX_ENEMIES]Enemy {
 			enter_delay = f32(group) * GROUP_STAGGER,
 			dive_timer  = rand_dive_timer(),
 			wave        = wave,
+			variant     = Enemy_Variant(variant),
 		}
 	}
 	return enemies
