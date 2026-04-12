@@ -48,22 +48,22 @@ load_settings :: proc(s: ^Game_State) {
 	size, _ := os.file_size(fd)
 	if size <= 0 do return
 
-	data := make([]byte, int(size), context.allocator)
-	defer delete(data, context.allocator)
+	data := make([]byte, int(size))
+	defer delete(data)
 
 	_, read_err := os.read(fd, data)
 	if read_err != 0 do return
 
 	content := string(data)
-	lines := strings.split(content, "\n", context.allocator)
-	defer delete(lines, context.allocator)
+	lines := strings.split(content, "\n")
+	defer delete(lines)
 
 	for line in lines {
 		trimmed := strings.trim_space(line)
 		if trimmed == "" || strings.has_prefix(trimmed, "#") do continue
 
-		parts := strings.split(trimmed, "=", context.allocator)
-		defer delete(parts, context.allocator)
+		parts := strings.split(trimmed, "=")
+		defer delete(parts)
 
 		if len(parts) == 2 {
 			key := strings.trim_space(parts[0])
