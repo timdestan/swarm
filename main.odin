@@ -180,6 +180,10 @@ Game_State :: struct {
 	double_shot_timer:    f32,
 	exploding_shot_timer: f32,
 	seeking_shot_timer:   f32,
+	paused:               bool,
+	volume:               f32,
+	quit_game:            bool,
+	save_timer:           f32,
 }
 
 // ---- Main ----
@@ -192,6 +196,8 @@ main :: proc() {
 	rl.InitAudioDevice()
 	defer rl.CloseAudioDevice()
 
+	rl.SetExitKey(.KEY_NULL)
+
 	music := rl.LoadMusicStream("assets/xeon5.ogg")
 	defer rl.UnloadMusicStream(music)
 	rl.SetMusicVolume(music, 0.6)
@@ -202,10 +208,12 @@ main :: proc() {
 	enemy_sheet := rl.LoadTexture("assets/ships_biomech.png")
 	defer rl.UnloadTexture(enemy_sheet)
 
-	state := init_game()
+	state := init_game(0.6)
+	load_settings(&state)
 
-	for !rl.WindowShouldClose() {
+	for !rl.WindowShouldClose() && !state.quit_game {
 		rl.UpdateMusicStream(music)
+		rl.SetMusicVolume(music, state.volume)
 		update(&state, rl.GetFrameTime())
 		draw(&state, player_sheet, enemy_sheet)
 	}
@@ -213,7 +221,7 @@ main :: proc() {
 
 // ---- Init ----
 
-init_game :: proc() -> Game_State {
+init_game :: proc(volume: f32) -> Game_State {
 	s: Game_State
 	s.player = Player {
 		pos = PLAYER_START_POS,
@@ -223,14 +231,18 @@ init_game :: proc() -> Game_State {
 	s.wave = 1
 	s.enemies = init_formation(wave_rows(1), 1)
 	for &star in s.stars {star = random_star(spread = true)}
+	s.volume = volume
 	return s
 }
 
 // ---- Update ----
 
 update :: proc(s: ^Game_State, dt: f32) {
+	update_settings_menu(s, dt)
+	if s.paused do return
+
 	if s.game_over {
-		if rl.IsKeyPressed(.R) {s^ = init_game()}
+		if rl.IsKeyPressed(.R) {s^ = init_game(s.volume)}
 		return
 	}
 
@@ -702,6 +714,7 @@ draw :: proc(s: ^Game_State, player_sheet: rl.Texture2D, enemy_sheet: rl.Texture
 	}
 
 	// HUD
+	// ---- HUD ----
 	rl.DrawText(rl.TextFormat("SCORE %d", s.score), 10, 10, 20, rl.WHITE)
 
 	// Lives — bottom left, 24×24 ship sprites
@@ -717,6 +730,7 @@ draw :: proc(s: ^Game_State, player_sheet: rl.Texture2D, enemy_sheet: rl.Texture
 		}
 		rl.DrawTexturePro(player_sheet, s.player.src, life_dest, {0, 0}, 0, rl.WHITE)
 	}
+
 	rl.DrawText(
 		rl.TextFormat("WAVE %d", s.wave),
 		SCREEN_WIDTH - 90,
@@ -728,35 +742,21 @@ draw :: proc(s: ^Game_State, player_sheet: rl.Texture2D, enemy_sheet: rl.Texture
 	// Active powerup icons — directly right of the lives row, same bottom baseline
 	ICON :: i32(40)
 	icon_x := 10 + PLAYER_LIVES * LIFE_STEP + 8
-	draw_powerup_icon :: proc(x, y, size: i32, label: cstring, color: rl.Color, frac: f32) {
-		// Full colored background
-		rl.DrawRectangle(x, y, size, size, color)
-		// Grey overlay fills down from top as frac decreases (frac=1 full, frac=0 empty)
-		grey_h := i32((1.0 - frac) * f32(size))
-		if grey_h > 0 {
-			rl.DrawRectangle(x, y, size, grey_h, {40, 40, 40, 200})
-		}
-		// Horizontal line at the boundary
-		line_y := y + grey_h
-		rl.DrawRectangle(x, line_y - 1, size, 2, rl.WHITE)
-		// Border and label
-		rl.DrawRectangleLines(x, y, size, size, rl.WHITE)
-		rl.DrawText(label, x + size / 2 - 6, y + size / 2 - 6, 14, rl.WHITE)
-	}
 	powerup_y := i32(SCREEN_HEIGHT) - ICON - 10
+
 	if s.double_shot_timer > 0 {
 		frac := s.double_shot_timer / DOUBLE_SHOT_DURATION
-		draw_powerup_icon(icon_x, powerup_y, ICON, "2x", {0, 180, 220, 200}, frac)
+		draw_powerup_icon_hud(icon_x, powerup_y, ICON, "2x", {0, 180, 220, 200}, frac)
 		icon_x += ICON + 6
 	}
 	if s.exploding_shot_timer > 0 {
 		frac := s.exploding_shot_timer / EXPLODING_SHOT_DURATION
-		draw_powerup_icon(icon_x, powerup_y, ICON, "X", {220, 80, 0, 200}, frac)
+		draw_powerup_icon_hud(icon_x, powerup_y, ICON, "X", {220, 80, 0, 200}, frac)
 		icon_x += ICON + 6
 	}
 	if s.seeking_shot_timer > 0 {
 		frac := s.seeking_shot_timer / SEEKING_SHOT_DURATION
-		draw_powerup_icon(icon_x, powerup_y, ICON, "S", {180, 80, 255, 200}, frac)
+		draw_powerup_icon_hud(icon_x, powerup_y, ICON, "S", {180, 80, 255, 200}, frac)
 	}
 
 	if s.wave_clear_timer > 0 {
@@ -774,7 +774,26 @@ draw :: proc(s: ^Game_State, player_sheet: rl.Texture2D, enemy_sheet: rl.Texture
 		)
 	}
 
+	draw_settings_menu(s)
+
 	rl.EndDrawing()
+}
+
+// Internal helper for powerup icons in HUD
+draw_powerup_icon_hud :: proc(x, y, size: i32, label: cstring, color: rl.Color, frac: f32) {
+	// Full colored background
+	rl.DrawRectangle(x, y, size, size, color)
+	// Grey overlay fills down from top as frac decreases (frac=1 full, frac=0 empty)
+	grey_h := i32((1.0 - frac) * f32(size))
+	if grey_h > 0 {
+		rl.DrawRectangle(x, y, size, grey_h, {40, 40, 40, 200})
+	}
+	// Horizontal line at the boundary
+	line_y := y + grey_h
+	rl.DrawRectangle(x, line_y - 1, size, 2, rl.WHITE)
+	// Border and label
+	rl.DrawRectangleLines(x, y, size, size, rl.WHITE)
+	rl.DrawText(label, x + size / 2 - 6, y + size / 2 - 6, 14, rl.WHITE)
 }
 
 // ---- Helpers ----
