@@ -56,6 +56,8 @@ RETURN_DURATION :: 1.6
 MAX_PARTICLES :: 48
 MAX_BLASTS :: 8
 BLAST_DURATION :: 0.45
+MAX_HIT_FLASHES :: 16
+HIT_FLASH_DURATION :: 0.18
 STAR_COUNT :: 150
 
 POWERUP_DROP_CHANCE :: 18 // percent chance on enemy kill
@@ -217,6 +219,12 @@ Blast :: struct {
 	alive: bool,
 }
 
+Hit_Flash :: struct {
+	pos:   rl.Vector2,
+	t:     f32, // 0 = just spawned, 1 = finished
+	alive: bool,
+}
+
 Game_State :: struct {
 	player:               Player,
 	lives:                int,
@@ -236,6 +244,7 @@ Game_State :: struct {
 	score:                int,
 	powerups:             [MAX_POWERUPS]Powerup,
 	blasts:               [MAX_BLASTS]Blast,
+	hit_flashes:          [MAX_HIT_FLASHES]Hit_Flash,
 	double_shot_timer:    f32,
 	exploding_shot_timer: f32,
 	seeking_shot_timer:   f32,
@@ -450,6 +459,13 @@ update :: proc(s: ^Game_State, dt: f32) {
 		if bl.t >= 1 {bl.alive = false}
 	}
 
+	// --- Hit flashes ---
+	for &hf in s.hit_flashes {
+		if !hf.alive do continue
+		hf.t += dt / HIT_FLASH_DURATION
+		if hf.t >= 1 {hf.alive = false}
+	}
+
 	// --- Enemies ---
 	s.drift_time += dt
 	drift_offset := math.sin(s.drift_time * math.TAU / DRIFT_PERIOD) * f32(DRIFT_RANGE)
@@ -628,7 +644,10 @@ update :: proc(s: ^Game_State, dt: f32) {
 			if abs(b.pos.x - e.pos.x) < hit_half && abs(b.pos.y - e.pos.y) < hit_half {
 				b.alive = false
 				e.hp -= 1
-				if e.hp > 0 do continue // boss survives the hit
+				if e.hp > 0 {
+					spawn_hit_flash(&s.hit_flashes, b.pos)
+					continue // boss survives the hit
+				}
 				e.alive = false
 				s.score += BOSS_SCORE if e.variant == .Boss else 100
 				spawn_explosion(&s.particles, e.pos)
@@ -841,10 +860,7 @@ draw :: proc(s: ^Game_State, player_sheet: rl.Texture2D, enemy_sheet: rl.Texture
 		if e.variant == .Boss {
 			dest := rl.Rectangle{x = e.pos.x, y = e.pos.y, width = BOSS_SIZE, height = BOSS_SIZE}
 			boss_origin := rl.Vector2{BOSS_SIZE / 2, BOSS_SIZE / 2}
-			// Flash red at low HP
-			hp_frac := f32(e.hp) / f32(e.max_hp)
-			tint := hp_frac < 0.35 ? rl.Color{255, 100, 100, 255} : rl.WHITE
-			rl.DrawTexturePro(saucer_sheet, e.src, dest, boss_origin, 0, tint)
+			rl.DrawTexturePro(saucer_sheet, e.src, dest, boss_origin, 0, rl.WHITE)
 		} else {
 			dest := rl.Rectangle {
 				x      = e.pos.x,
@@ -879,6 +895,19 @@ draw :: proc(s: ^Game_State, player_sheet: rl.Texture2D, enemy_sheet: rl.Texture
 			rl.DrawText(boss_label, SCREEN_WIDTH / 2 - lw / 2, i32(bar_y) - 18, 14, rl.RED)
 			break
 		}
+	}
+
+	// Hit flashes (boss damage sparks)
+	for hf in s.hit_flashes {
+		if !hf.alive do continue
+		ease := f32(1) - (f32(1) - hf.t) * (f32(1) - hf.t) // ease-out
+		outer := ease * 20
+		alpha := u8((f32(1) - hf.t) * 255)
+		// Expanding ring
+		rl.DrawRing(hf.pos, max(outer - 3, 0), outer, 0, 360, 12, rl.Color{255, 220, 80, alpha})
+		// Bright core dot that shrinks away
+		core := (f32(1) - hf.t) * 5
+		rl.DrawCircleV(hf.pos, core, rl.Color{255, 255, 200, alpha})
 	}
 
 	// Player
@@ -1252,6 +1281,19 @@ spawn_blast :: proc(blasts: ^[MAX_BLASTS]Blast, pos: rl.Vector2) {
 	for &bl in blasts {
 		if !bl.alive {
 			bl = {
+				pos   = pos,
+				t     = 0,
+				alive = true,
+			}
+			return
+		}
+	}
+}
+
+spawn_hit_flash :: proc(flashes: ^[MAX_HIT_FLASHES]Hit_Flash, pos: rl.Vector2) {
+	for &hf in flashes {
+		if !hf.alive {
+			hf = {
 				pos   = pos,
 				t     = 0,
 				alive = true,
