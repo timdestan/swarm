@@ -6,12 +6,18 @@ code in this repository.
 ## Build commands
 
 ```sh
-odin run .           # build and run
-odin build .         # build only (produces swarm.exe)
+odin run .                                    # build and run (native)
+odin build .                                  # build only (produces swarm.exe)
+odin build . -target:js_wasm32 -out:swarm.wasm  # cross-compile to wasm
 ```
 
 There are no tests or linter. The compiler is the only correctness check — a
 clean `odin build .` is the definition of "passes".
+
+The wasm build requires a host page that loads `odin.js` (from the Odin
+compiler's `core/sys/wasm/js/` directory) alongside `swarm.wasm`. Settings
+persistence in the wasm build uses `localStorage` instead of `settings.cfg`
+(see `settings_io_js.odin`).
 
 ## Formatting
 
@@ -68,6 +74,10 @@ Each `Enemy` runs through:
 
 Stars → Particles → Blast rings → Powerups → Enemy bullets → Player bullets →
 Enemies → Boss health bar → Hit flashes → Player → HUD → Pause menu
+
+### Build tags
+
+Odin's platform build constraint directive is `#+build` (not `//+build`, which is a plain comment and silently ignored). Comma-separated values on one line are OR'd; space-separated values are AND'd. `settings_io.odin` uses `#+build !js` to exclude itself from wasm builds, and `settings_io_js.odin` uses `#+build js` to provide no-op stubs for that target.
 
 ### Font system
 

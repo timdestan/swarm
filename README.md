@@ -26,6 +26,16 @@ odin run .
 odin build . -out:swarm.exe
 ```
 
+**WebAssembly**
+
+```sh
+odin build . -target:js_wasm32 -out:swarm.wasm
+```
+
+Requires a host page that loads `odin.js` from the Odin compiler's
+`core/sys/wasm/js/` directory. Settings are persisted via `localStorage`
+instead of a config file.
+
 ## Controls
 
 | Key | Action |
