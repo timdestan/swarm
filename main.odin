@@ -7,7 +7,7 @@ SCREEN_WIDTH :: 800
 SCREEN_HEIGHT :: 1080
 TITLE :: "Swarm"
 
-PLAYER_SPEED :: 220
+PLAYER_SPEED :: 250
 PLAYER_SIZE :: 48 // display width and hitbox
 PLAYER_H :: 64 // display height (sprite is 48×64)
 PLAYER_HALF :: PLAYER_SIZE / 2
@@ -40,7 +40,7 @@ WAVE_CLEAR_DELAY :: 2.5
 DRIFT_RANGE :: 50.0
 DRIFT_PERIOD :: 4.0
 
-MAX_ENEMY_BULLETS :: 20
+MAX_ENEMY_BULLETS :: 48
 ENEMY_BULLET_SPEED :: 270.0
 ENEMY_FIRE_MIN :: 2.5
 ENEMY_FIRE_MAX :: 6.5
@@ -74,7 +74,46 @@ SEEKING_SHOT_DURATION :: 10.0
 SEEKING_SHOT_SCORE :: 150
 SEEKING_TURN_RATE :: 6.5 // radians per second
 
+// Boss
+BOSS_HP_BASE :: 8
+BOSS_SIZE :: 80           // display size
+BOSS_HALF :: f32(36)      // hitbox half-size
+BOSS_SCORE :: 1000
+BOSS_FIRE_RATE_HIGH :: 2.0
+BOSS_FIRE_RATE_LOW :: 1.0
+BOSS_SPREAD_HIGH :: 5     // shots per volley when hp > 50%
+BOSS_SPREAD_LOW :: 7      // shots per volley when hp <= 50%
+BOSS_SPREAD_STEP :: 20.0  // degrees between shots
+
+// Level progression
+WAVES_PER_LEVEL :: 3      // waves per level, last is always boss
+NUM_LEVELS :: 2           // defined levels (loops after all complete)
+LEVEL_CLEAR_DELAY :: 3.5
+
 PLAYER_START_POS :: rl.Vector2{SCREEN_WIDTH / 2, SCREEN_HEIGHT - 80}
+
+// ---- Level / Wave Data ----
+
+Wave_Config :: struct {
+	is_boss:         bool,
+	rows:            int,
+	variant_weights: [4]int, // Standard, Aggressive, Heavy, Burst
+	boss_hp:         int,
+}
+
+// Each level is WAVES_PER_LEVEL waves; last wave is always the boss.
+LEVEL_DATA := [NUM_LEVELS][WAVES_PER_LEVEL]Wave_Config{
+	{ // Level 1
+		{rows = 3, variant_weights = {100, 0, 0, 0}},
+		{rows = 4, variant_weights = {70, 30, 0, 0}},
+		{is_boss = true, boss_hp = BOSS_HP_BASE},
+	},
+	{ // Level 2
+		{rows = 5, variant_weights = {50, 30, 20, 0}},
+		{rows = 6, variant_weights = {30, 30, 20, 20}},
+		{is_boss = true, boss_hp = BOSS_HP_BASE + 5},
+	},
+}
 
 // ---- Types ----
 
@@ -127,6 +166,7 @@ Enemy_Variant :: enum {
 	Aggressive,
 	Heavy,
 	Burst,
+	Boss,
 }
 
 Enemy :: struct {
@@ -146,6 +186,8 @@ Enemy :: struct {
 	variant:     Enemy_Variant,
 	burst_count: int,
 	burst_timer: f32,
+	hp:          int,
+	max_hp:      int,
 }
 
 Enemy_Bullet :: struct {
@@ -195,6 +237,10 @@ Game_State :: struct {
 	quit_game:            bool,
 	save_timer:           f32,
 	show_fps:             bool,
+	level:                int,
+	level_wave:           int, // 0-indexed within current level
+	boss_wave:            bool,
+	level_clear_pending:  bool, // true while clearing a boss wave
 }
 
 // ---- Main ----
@@ -218,6 +264,8 @@ main :: proc() {
 	defer rl.UnloadTexture(player_sheet)
 	enemy_sheet := rl.LoadTexture("assets/ships_biomech.png")
 	defer rl.UnloadTexture(enemy_sheet)
+	saucer_sheet := rl.LoadTexture("assets/ships_saucer.png")
+	defer rl.UnloadTexture(saucer_sheet)
 
 	state := init_game(0.6)
 	load_settings(&state)
@@ -226,7 +274,7 @@ main :: proc() {
 		rl.UpdateMusicStream(music)
 		rl.SetMusicVolume(music, state.volume)
 		update(&state, rl.GetFrameTime())
-		draw(&state, player_sheet, enemy_sheet)
+		draw(&state, player_sheet, enemy_sheet, saucer_sheet)
 	}
 }
 
@@ -240,7 +288,11 @@ init_game :: proc(volume: f32) -> Game_State {
 	}
 	s.lives = PLAYER_LIVES
 	s.wave = 1
-	s.enemies = init_formation(wave_rows(1), 1)
+	s.level = 1
+	s.level_wave = 0
+	config := LEVEL_DATA[0][0]
+	s.enemies = init_wave(config, 1)
+	s.boss_wave = config.is_boss
 	for &star in s.stars {star = random_star(spread = true)}
 	s.volume = volume
 	return s
@@ -421,6 +473,17 @@ update :: proc(s: ^Game_State, dt: f32) {
 			e.pos = {base.x + drift_offset * e.enter_t, base.y}
 
 		case .Formation:
+			if e.variant == .Boss {
+				// Boss sways widely across the top
+				e.pos.x = e.slot.x + math.sin(s.drift_time * math.TAU / 3.2) * 280
+				e.pos.y = e.slot.y + math.sin(s.drift_time * math.TAU / 5.7) * 28
+				e.fire_timer -= dt
+				if e.fire_timer <= 0 {
+					enemy_fire(s, &e)
+					hp_frac := f32(e.hp) / f32(e.max_hp)
+					e.fire_timer = BOSS_FIRE_RATE_LOW if hp_frac < 0.5 else BOSS_FIRE_RATE_HIGH
+				}
+			} else {
 			e.pos = {e.slot.x + drift_offset, e.slot.y}
 			e.fire_timer -= dt
 			if e.fire_timer <= 0 {
@@ -447,7 +510,7 @@ update :: proc(s: ^Game_State, dt: f32) {
 							spd *= 1.4 // Fast Diver
 						case .Heavy:
 							spd *= 0.75 // Heavy Marksman is slower
-						case .Standard, .Burst:
+						case .Standard, .Burst, .Boss:
 						}
 
 						e.dive_vel = {dx / l * spd, dy / l * spd}
@@ -462,6 +525,7 @@ update :: proc(s: ^Game_State, dt: f32) {
 					}
 				}
 			}
+		} // end else (non-boss)
 
 		case .Diving:
 			e.pos.x += e.dive_vel.x * dt
@@ -544,12 +608,15 @@ update :: proc(s: ^Game_State, dt: f32) {
 		if !b.alive do continue
 		for &e in s.enemies {
 			if !e.alive do continue
-			if abs(b.pos.x - e.pos.x) < ENEMY_HALF && abs(b.pos.y - e.pos.y) < ENEMY_HALF {
+			hit_half := BOSS_HALF if e.variant == .Boss else f32(ENEMY_HALF)
+			if abs(b.pos.x - e.pos.x) < hit_half && abs(b.pos.y - e.pos.y) < hit_half {
 				b.alive = false
+				e.hp -= 1
+				if e.hp > 0 do continue // boss survives the hit
 				e.alive = false
-				s.score += 100
+				s.score += BOSS_SCORE if e.variant == .Boss else 100
 				spawn_explosion(&s.particles, e.pos)
-				if rl.GetRandomValue(0, 99) < POWERUP_DROP_CHANCE {
+				if e.variant != .Boss && rl.GetRandomValue(0, 99) < POWERUP_DROP_CHANCE {
 					drop_powerup(&s.powerups, e.pos)
 				}
 				if s.exploding_shot_timer > 0 {
@@ -559,9 +626,12 @@ update :: proc(s: ^Game_State, dt: f32) {
 						dx := other.pos.x - e.pos.x
 						dy := other.pos.y - e.pos.y
 						if dx * dx + dy * dy < EXPLODING_SHOT_RADIUS * EXPLODING_SHOT_RADIUS {
-							other.alive = false
-							s.score += 100
-							spawn_explosion(&s.particles, other.pos)
+							other.hp -= 1
+							if other.hp <= 0 {
+								other.alive = false
+								s.score += BOSS_SCORE if other.variant == .Boss else 100
+								spawn_explosion(&s.particles, other.pos)
+							}
 						}
 					}
 					// Player caught in their own explosion
@@ -584,20 +654,32 @@ update :: proc(s: ^Game_State, dt: f32) {
 	if s.wave_clear_timer == 0 {
 		all_dead := true
 		for e in s.enemies {if e.alive {all_dead = false; break}}
-		if all_dead {s.wave_clear_timer = WAVE_CLEAR_DELAY}
+		if all_dead {
+			s.wave_clear_timer = s.boss_wave ? LEVEL_CLEAR_DELAY : WAVE_CLEAR_DELAY
+			s.level_clear_pending = s.boss_wave
+		}
 	} else {
 		s.wave_clear_timer -= dt
 		if s.wave_clear_timer <= 0 {
 			s.wave += 1
 			s.wave_clear_timer = 0
-			s.enemies = init_formation(wave_rows(s.wave), s.wave)
+			s.level_clear_pending = false
+			s.level_wave += 1
+			if s.level_wave >= WAVES_PER_LEVEL {
+				s.level_wave = 0
+				s.level += 1
+			}
+			level_idx := (s.level - 1) % NUM_LEVELS
+			config := LEVEL_DATA[level_idx][s.level_wave]
+			s.enemies = init_wave(config, s.wave)
+			s.boss_wave = config.is_boss
 		}
 	}
 }
 
 // ---- Draw ----
 
-draw :: proc(s: ^Game_State, player_sheet: rl.Texture2D, enemy_sheet: rl.Texture2D) {
+draw :: proc(s: ^Game_State, player_sheet: rl.Texture2D, enemy_sheet: rl.Texture2D, saucer_sheet: rl.Texture2D) {
 	player_origin :: rl.Vector2{f32(PLAYER_SIZE) / 2, f32(PLAYER_H) / 2}
 	enemy_origin :: rl.Vector2{ENEMY_HALF, ENEMY_HALF}
 
@@ -731,13 +813,47 @@ draw :: proc(s: ^Game_State, player_sheet: rl.Texture2D, enemy_sheet: rl.Texture
 	// Enemies
 	for e in s.enemies {
 		if !e.alive do continue
-		dest := rl.Rectangle {
-			x      = e.pos.x,
-			y      = e.pos.y,
-			width  = ENEMY_SIZE,
-			height = ENEMY_SIZE,
+		if e.variant == .Boss {
+			dest := rl.Rectangle{x = e.pos.x, y = e.pos.y, width = BOSS_SIZE, height = BOSS_SIZE}
+			boss_origin := rl.Vector2{BOSS_SIZE / 2, BOSS_SIZE / 2}
+			// Flash red at low HP
+			hp_frac := f32(e.hp) / f32(e.max_hp)
+			tint := hp_frac < 0.35 ? rl.Color{255, 100, 100, 255} : rl.WHITE
+			rl.DrawTexturePro(saucer_sheet, e.src, dest, boss_origin, 0, tint)
+		} else {
+			dest := rl.Rectangle {
+				x      = e.pos.x,
+				y      = e.pos.y,
+				width  = ENEMY_SIZE,
+				height = ENEMY_SIZE,
+			}
+			rl.DrawTexturePro(enemy_sheet, e.src, dest, enemy_origin, 0, rl.WHITE)
 		}
-		rl.DrawTexturePro(enemy_sheet, e.src, dest, enemy_origin, 0, rl.WHITE)
+	}
+
+	// Boss health bar
+	for e in s.enemies {
+		if e.alive && e.variant == .Boss {
+			bar_w := f32(300)
+			bar_h := f32(16)
+			bar_x := f32(SCREEN_WIDTH) / 2 - bar_w / 2
+			bar_y := f32(36)
+			hp_frac := f32(e.hp) / f32(e.max_hp)
+			rl.DrawRectangle(i32(bar_x), i32(bar_y), i32(bar_w), i32(bar_h), rl.Color{40, 0, 0, 220})
+			fill_color := hp_frac > 0.5 ? rl.Color{200, 30, 30, 255} : rl.Color{255, 80, 0, 255}
+			rl.DrawRectangle(
+				i32(bar_x),
+				i32(bar_y),
+				i32(bar_w * hp_frac),
+				i32(bar_h),
+				fill_color,
+			)
+			rl.DrawRectangleLines(i32(bar_x), i32(bar_y), i32(bar_w), i32(bar_h), rl.RED)
+			boss_label :: "BOSS"
+			lw := rl.MeasureText(boss_label, 14)
+			rl.DrawText(boss_label, SCREEN_WIDTH / 2 - lw / 2, i32(bar_y) - 18, 14, rl.RED)
+			break
+		}
 	}
 
 	// Player
@@ -774,8 +890,8 @@ draw :: proc(s: ^Game_State, player_sheet: rl.Texture2D, enemy_sheet: rl.Texture
 	}
 
 	rl.DrawText(
-		rl.TextFormat("WAVE %d", s.wave),
-		SCREEN_WIDTH - 90,
+		rl.TextFormat("LV%d  W%d/%d", s.level, s.level_wave + 1, WAVES_PER_LEVEL),
+		SCREEN_WIDTH - 140,
 		SCREEN_HEIGHT - 24,
 		20,
 		rl.GRAY,
@@ -802,7 +918,15 @@ draw :: proc(s: ^Game_State, player_sheet: rl.Texture2D, enemy_sheet: rl.Texture
 	}
 
 	if s.wave_clear_timer > 0 {
-		rl.DrawText("WAVE CLEAR", SCREEN_WIDTH / 2 - 90, SCREEN_HEIGHT / 2 - 14, 36, rl.GREEN)
+		if s.level_clear_pending {
+			msg :: "LEVEL CLEAR!"
+			mw := rl.MeasureText(msg, 42)
+			rl.DrawText(msg, SCREEN_WIDTH / 2 - mw / 2, SCREEN_HEIGHT / 2 - 24, 42, rl.GOLD)
+		} else {
+			msg :: "WAVE CLEAR"
+			mw := rl.MeasureText(msg, 36)
+			rl.DrawText(msg, SCREEN_WIDTH / 2 - mw / 2, SCREEN_HEIGHT / 2 - 18, 36, rl.GREEN)
+		}
 	}
 
 	if s.game_over {
@@ -849,6 +973,29 @@ enemy_fire :: proc(s: ^Game_State, e: ^Enemy) {
 		fire_enemy_bullet(&s.enemy_bullets, e.pos, s.player.pos)
 		e.burst_count = 2 // One more after this
 		e.burst_timer = 0.12
+	case .Boss:
+		// Fan of bullets aimed at the player; more shots at low HP
+		hp_frac := f32(e.hp) / f32(e.max_hp)
+		count := BOSS_SPREAD_HIGH if hp_frac > 0.5 else BOSS_SPREAD_LOW
+		base_angle := math.atan2(
+			s.player.pos.y - e.pos.y,
+			s.player.pos.x - e.pos.x,
+		)
+		step := f32(BOSS_SPREAD_STEP) * math.PI / 180.0
+		half := f32(count / 2)
+		for i in 0 ..< count {
+			a := base_angle + (f32(i) - half) * step
+			vel := rl.Vector2 {
+				math.cos(a) * ENEMY_BULLET_SPEED,
+				math.sin(a) * ENEMY_BULLET_SPEED,
+			}
+			for &b in s.enemy_bullets {
+				if !b.alive {
+					b = {pos = e.pos, vel = vel, alive = true}
+					break
+				}
+			}
+		}
 	}
 }
 
@@ -957,12 +1104,54 @@ powerup_label :: proc(type: Powerup_Type) -> cstring {
 	return "?"
 }
 
-wave_rows :: proc(wave: int) -> int {
-	return min(FORMATION_ROWS_BASE + wave - 1, FORMATION_ROWS_MAX)
+pick_weighted_variant :: proc(weights: [4]int) -> int {
+	total := 0
+	for w in weights {total += w}
+	if total == 0 {return 0}
+	roll := int(rl.GetRandomValue(0, i32(total - 1)))
+	cumulative := 0
+	for w, i in weights {
+		cumulative += w
+		if roll < cumulative {return i}
+	}
+	return 0
 }
 
-init_formation :: proc(rows, wave: int) -> [MAX_ENEMIES]Enemy {
+init_wave :: proc(config: Wave_Config, wave: int) -> [MAX_ENEMIES]Enemy {
+	if config.is_boss {
+		return init_boss_wave(config, wave)
+	}
+	return init_formation(config, wave)
+}
+
+init_boss_wave :: proc(config: Wave_Config, wave: int) -> [MAX_ENEMIES]Enemy {
 	enemies: [MAX_ENEMIES]Enemy
+	slot := rl.Vector2{f32(SCREEN_WIDTH) / 2, 200}
+	enter_from := rl.Vector2{f32(SCREEN_WIDTH) / 2, -100}
+	enter_ctrl := rl.Vector2{f32(SCREEN_WIDTH) / 2, 60}
+	hp := config.boss_hp
+	enemies[0] = Enemy {
+		pos        = enter_from,
+		slot       = slot,
+		enter_from = enter_from,
+		enter_ctrl = enter_ctrl,
+		src        = rl.Rectangle{12, 724, 72, 72},
+		alive      = true,
+		state      = .Entering,
+		enter_t    = 0,
+		fire_timer = 2.0,
+		dive_timer = 99999,
+		wave       = wave,
+		variant    = .Boss,
+		hp         = hp,
+		max_hp     = hp,
+	}
+	return enemies
+}
+
+init_formation :: proc(config: Wave_Config, wave: int) -> [MAX_ENEMIES]Enemy {
+	enemies: [MAX_ENEMIES]Enemy
+	rows := min(config.rows, FORMATION_ROWS_MAX)
 	total := rows * FORMATION_COLS
 
 	// Build all slots then shuffle so groups claim random grid positions
@@ -982,11 +1171,11 @@ init_formation :: proc(rows, wave: int) -> [MAX_ENEMIES]Enemy {
 
 	// ships_biomech.png: 3 cols × 64px wide, 4 colour sections each ~176px tall
 	// Pick the middle column (x=64) and one sprite per section, flipped vertically
-	biomech_sprites := []rl.Rectangle {
-		{64, 96, 64, -96}, // section 1: brown/natural
-		{64, 272, 64, -96}, // section 2: dark/black
-		{64, 448, 64, -96}, // section 3: dark red
-		{64, 624, 64, -96}, // section 4: pink/purple
+	biomech_sprites := [4]rl.Rectangle {
+		{64, 96, 64, -96}, // section 1: brown/natural  → Standard
+		{64, 272, 64, -96}, // section 2: dark/black    → Aggressive
+		{64, 448, 64, -96}, // section 3: dark red      → Heavy
+		{64, 624, 64, -96}, // section 4: pink/purple   → Burst
 	}
 
 	for i in 0 ..< total {
@@ -999,20 +1188,22 @@ init_formation :: proc(rows, wave: int) -> [MAX_ENEMIES]Enemy {
 		enter_ctrl :=
 			rl.Vector2{-60, slot.y + 120} if from_left else rl.Vector2{SCREEN_WIDTH + 60, slot.y + 120}
 
-		variant := rl.GetRandomValue(0, i32(len(biomech_sprites) - 1))
+		variant_idx := pick_weighted_variant(config.variant_weights)
 
 		enemies[i] = Enemy {
 			pos         = enter_from,
 			slot        = slot,
 			enter_from  = enter_from,
 			enter_ctrl  = enter_ctrl,
-			src         = biomech_sprites[variant],
+			src         = biomech_sprites[variant_idx],
 			alive       = true,
 			state       = .Waiting,
 			enter_delay = f32(group) * GROUP_STAGGER,
 			dive_timer  = rand_dive_timer(),
 			wave        = wave,
-			variant     = Enemy_Variant(variant),
+			variant     = Enemy_Variant(variant_idx),
+			hp          = 1,
+			max_hp      = 1,
 		}
 	}
 	return enemies
