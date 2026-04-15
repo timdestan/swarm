@@ -1,9 +1,9 @@
 package swarm
 
-import "core:os"
 import "core:fmt"
-import "core:strings"
+import "core:os"
 import "core:strconv"
+import "core:strings"
 import rl "vendor:raylib"
 
 // ---- Settings UI Constants ----
@@ -100,8 +100,10 @@ update_settings_menu :: proc(s: ^Game_State, dt: f32) {
 		mouse := rl.GetMousePosition()
 		if rl.IsMouseButtonDown(.LEFT) {
 			// Broad collision check for the slider to make it easy to grab
-			if mouse.y > SLIDER_Y - 40 && mouse.y < SLIDER_Y + 40 &&
-			   mouse.x > SLIDER_X - 20 && mouse.x < SLIDER_X + SLIDER_W + 20 {
+			if mouse.y > SLIDER_Y - 40 &&
+			   mouse.y < SLIDER_Y + 40 &&
+			   mouse.x > SLIDER_X - 20 &&
+			   mouse.x < SLIDER_X + SLIDER_W + 20 {
 				new_vol := clamp((mouse.x - SLIDER_X) / SLIDER_W, 0, 1)
 				if new_vol != s.volume {
 					s.volume = new_vol
@@ -111,7 +113,10 @@ update_settings_menu :: proc(s: ^Game_State, dt: f32) {
 		}
 
 		if rl.IsMouseButtonPressed(.LEFT) {
-			if rl.CheckCollisionPointRec(mouse, {RESUME_BTN_X, RESUME_BTN_Y, RESUME_BTN_W, RESUME_BTN_H}) {
+			if rl.CheckCollisionPointRec(
+				mouse,
+				{RESUME_BTN_X, RESUME_BTN_Y, RESUME_BTN_W, RESUME_BTN_H},
+			) {
 				s.paused = false
 				save_settings(s)
 				s.save_timer = 0
@@ -123,7 +128,7 @@ update_settings_menu :: proc(s: ^Game_State, dt: f32) {
 	}
 }
 
-draw_settings_menu :: proc(s: ^Game_State) {
+draw_settings_menu :: proc(s: ^Game_State, font: rl.Font) {
 	if s.paused {
 		rl.DrawRectangle(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, {0, 0, 0, 180})
 
@@ -149,8 +154,9 @@ draw_settings_menu :: proc(s: ^Game_State) {
 
 		title :: "PAUSED"
 		title_size :: 32
-		title_w := rl.MeasureText(title, title_size)
-		rl.DrawText(
+		title_w := fnt_width(font, title, title_size)
+		fnt_draw(
+			font,
 			title,
 			SCREEN_WIDTH / 2 - title_w / 2,
 			i32(PAUSE_PANEL_Y) + 30,
@@ -159,7 +165,7 @@ draw_settings_menu :: proc(s: ^Game_State) {
 		)
 
 		// Volume Setting
-		rl.DrawText("VOLUME", i32(SLIDER_X), i32(SLIDER_Y) - 30, 18, rl.LIGHTGRAY)
+		fnt_draw(font, "VOLUME", i32(SLIDER_X), i32(SLIDER_Y) - 30, 18, rl.LIGHTGRAY)
 
 		rl.DrawRectangleRounded(
 			rl.Rectangle{SLIDER_X, SLIDER_Y, SLIDER_W, f32(SLIDER_H)},
@@ -178,7 +184,11 @@ draw_settings_menu :: proc(s: ^Game_State) {
 		handle_y := SLIDER_Y + f32(SLIDER_H) / 2
 
 		mouse := rl.GetMousePosition()
-		is_hovering_slider := rl.CheckCollisionPointCircle(mouse, rl.Vector2{handle_x, handle_y}, 12)
+		is_hovering_slider := rl.CheckCollisionPointCircle(
+			mouse,
+			rl.Vector2{handle_x, handle_y},
+			12,
+		)
 		handle_color := is_hovering_slider ? rl.WHITE : rl.GOLD
 
 		rl.DrawCircleV(rl.Vector2{handle_x, handle_y}, 10, handle_color)
@@ -206,8 +216,9 @@ draw_settings_menu :: proc(s: ^Game_State) {
 			rl.LIME,
 		)
 
-		resume_text_w := rl.MeasureText("RESUME", 20)
-		rl.DrawText(
+		resume_text_w := fnt_width(font, "RESUME", 20)
+		fnt_draw(
+			font,
 			"RESUME",
 			i32(RESUME_BTN_X + RESUME_BTN_W / 2) - resume_text_w / 2,
 			i32(RESUME_BTN_Y + RESUME_BTN_H / 2) - 10,
@@ -235,8 +246,9 @@ draw_settings_menu :: proc(s: ^Game_State) {
 			rl.MAROON,
 		)
 
-		quit_text_w := rl.MeasureText("QUIT", 20)
-		rl.DrawText(
+		quit_text_w := fnt_width(font, "QUIT", 20)
+		fnt_draw(
+			font,
 			"QUIT",
 			i32(QUIT_BTN_X + QUIT_BTN_W / 2) - quit_text_w / 2,
 			i32(QUIT_BTN_Y + QUIT_BTN_H / 2) - 10,
@@ -246,8 +258,9 @@ draw_settings_menu :: proc(s: ^Game_State) {
 
 		hint :: "Press ESC to Resume"
 		hint_size :: 16
-		hint_w := rl.MeasureText(hint, hint_size)
-		rl.DrawText(
+		hint_w := fnt_width(font, hint, hint_size)
+		fnt_draw(
+			font,
 			hint,
 			SCREEN_WIDTH / 2 - hint_w / 2,
 			i32(PAUSE_PANEL_Y + PAUSE_PANEL_H) - 30,

@@ -76,26 +76,30 @@ SEEKING_SHOT_DURATION :: 10.0
 SEEKING_SHOT_SCORE :: 150
 SEEKING_TURN_RATE :: 6.5 // radians per second
 
+FONT_PATH :: "assets/orbitron_font.ttf"
+FONT_SIZE :: i32(64) // rasterise large; scale down at draw time
+FONT_SPACING :: f32(1)
+
 // Boss
 BOSS_HP_BASE :: 40
-BOSS_SIZE :: 80           // display size
-BOSS_HALF :: f32(36)      // hitbox half-size
+BOSS_SIZE :: 80 // display size
+BOSS_HALF :: f32(36) // hitbox half-size
 BOSS_SCORE :: 1000
-BOSS_FIRE_RATE_HIGH :: 1.0  // volley every 1 s above 50% HP
-BOSS_FIRE_RATE_LOW :: 0.5   // volley every 0.5 s below 50% HP
-BOSS_SPREAD_HIGH :: 7     // shots per volley when hp > 50%
-BOSS_SPREAD_LOW :: 11     // shots per volley when hp <= 50%
-BOSS_SPREAD_STEP :: 18.0  // degrees between shots
+BOSS_FIRE_RATE_HIGH :: 1.0 // volley every 1 s above 50% HP
+BOSS_FIRE_RATE_LOW :: 0.5 // volley every 0.5 s below 50% HP
+BOSS_SPREAD_HIGH :: 7 // shots per volley when hp > 50%
+BOSS_SPREAD_LOW :: 11 // shots per volley when hp <= 50%
+BOSS_SPREAD_STEP :: 18.0 // degrees between shots
 
 // Extra lives
 EXTRA_LIFE_THRESHOLD_START :: 10_000
-EXTRA_LIFE_GAP_START       :: 10_000 // gap between first and second award
-EXTRA_LIFE_GAP_INCREASE    :: 5_000  // each award widens the next gap by this much
-EXTRA_LIFE_FLASH_DURATION  :: 2.5
+EXTRA_LIFE_GAP_START :: 10_000 // gap between first and second award
+EXTRA_LIFE_GAP_INCREASE :: 5_000 // each award widens the next gap by this much
+EXTRA_LIFE_FLASH_DURATION :: 2.5
 
 // Level progression
-WAVES_PER_LEVEL :: 3      // waves per level, last is always boss
-NUM_LEVELS :: 2           // defined levels (loops after all complete)
+WAVES_PER_LEVEL :: 3 // waves per level, last is always boss
+NUM_LEVELS :: 2 // defined levels (loops after all complete)
 LEVEL_CLEAR_DELAY :: 3.5
 
 PLAYER_START_POS :: rl.Vector2{SCREEN_WIDTH / 2, SCREEN_HEIGHT - 80}
@@ -110,13 +114,13 @@ Wave_Config :: struct {
 }
 
 // Each level is WAVES_PER_LEVEL waves; last wave is always the boss.
-LEVEL_DATA := [NUM_LEVELS][WAVES_PER_LEVEL]Wave_Config{
-	{ // Level 1
+LEVEL_DATA := [NUM_LEVELS][WAVES_PER_LEVEL]Wave_Config {
+	{ 	// Level 1
 		{rows = 3, variant_weights = {100, 0, 0, 0}},
 		{rows = 4, variant_weights = {70, 30, 0, 0}},
 		{is_boss = true, boss_hp = BOSS_HP_BASE},
 	},
-	{ // Level 2
+	{ 	// Level 2
 		{rows = 5, variant_weights = {50, 30, 20, 0}},
 		{rows = 6, variant_weights = {30, 30, 20, 20}},
 		{is_boss = true, boss_hp = BOSS_HP_BASE + 15},
@@ -286,6 +290,11 @@ main :: proc() {
 	saucer_sheet := rl.LoadTexture("assets/ships_saucer.png")
 	defer rl.UnloadTexture(saucer_sheet)
 
+	font := rl.LoadFontEx(FONT_PATH, FONT_SIZE, nil, 0)
+	if font.texture.id == 0 {font = rl.GetFontDefault()}
+	rl.SetTextureFilter(font.texture, .BILINEAR)
+	defer rl.UnloadFont(font)
+
 	state := init_game(0.6)
 	load_settings(&state)
 
@@ -293,7 +302,7 @@ main :: proc() {
 		rl.UpdateMusicStream(music)
 		rl.SetMusicVolume(music, state.volume)
 		update(&state, rl.GetFrameTime())
-		draw(&state, player_sheet, enemy_sheet, saucer_sheet)
+		draw(&state, player_sheet, enemy_sheet, saucer_sheet, font)
 	}
 }
 
@@ -516,48 +525,49 @@ update :: proc(s: ^Game_State, dt: f32) {
 					e.fire_timer = BOSS_FIRE_RATE_LOW if hp_frac < 0.5 else BOSS_FIRE_RATE_HIGH
 				}
 			} else {
-			e.pos = {e.slot.x + drift_offset, e.slot.y}
-			e.fire_timer -= dt
-			if e.fire_timer <= 0 {
-				enemy_fire(s, &e)
-				e.fire_timer = rand_fire_timer(e.wave)
-			}
-			if !s.player_dead {
-				e.dive_timer -= dt
-				if e.dive_timer <= 0 {
-					active := 0
-					for other in s.enemies {
-						if other.alive && (other.state == .Diving || other.state == .Returning) {
-							active += 1
+				e.pos = {e.slot.x + drift_offset, e.slot.y}
+				e.fire_timer -= dt
+				if e.fire_timer <= 0 {
+					enemy_fire(s, &e)
+					e.fire_timer = rand_fire_timer(e.wave)
+				}
+				if !s.player_dead {
+					e.dive_timer -= dt
+					if e.dive_timer <= 0 {
+						active := 0
+						for other in s.enemies {
+							if other.alive &&
+							   (other.state == .Diving || other.state == .Returning) {
+								active += 1
+							}
 						}
-					}
-					if active < MAX_ACTIVE_DIVERS {
-						dx := s.player.pos.x - e.pos.x + f32(rl.GetRandomValue(-60, 60))
-						dy := s.player.pos.y - e.pos.y + 250 // aim past player
-						l := math.sqrt(dx * dx + dy * dy)
+						if active < MAX_ACTIVE_DIVERS {
+							dx := s.player.pos.x - e.pos.x + f32(rl.GetRandomValue(-60, 60))
+							dy := s.player.pos.y - e.pos.y + 250 // aim past player
+							l := math.sqrt(dx * dx + dy * dy)
 
-						spd := f32(DIVE_SPEED)
-						switch e.variant {
-						case .Aggressive:
-							spd *= 1.4 // Fast Diver
-						case .Heavy:
-							spd *= 0.75 // Heavy Marksman is slower
-						case .Standard, .Burst, .Boss:
+							spd := f32(DIVE_SPEED)
+							switch e.variant {
+							case .Aggressive:
+								spd *= 1.4 // Fast Diver
+							case .Heavy:
+								spd *= 0.75 // Heavy Marksman is slower
+							case .Standard, .Burst, .Boss:
+							}
+
+							e.dive_vel = {dx / l * spd, dy / l * spd}
+							e.fire_timer =
+								DIVE_FIRE_MIN +
+								f32(rl.GetRandomValue(0, 100)) /
+									100.0 *
+									(DIVE_FIRE_MAX - DIVE_FIRE_MIN)
+							e.state = .Diving
+						} else {
+							e.dive_timer = rand_dive_timer()
 						}
-
-						e.dive_vel = {dx / l * spd, dy / l * spd}
-						e.fire_timer =
-							DIVE_FIRE_MIN +
-							f32(rl.GetRandomValue(0, 100)) /
-								100.0 *
-								(DIVE_FIRE_MAX - DIVE_FIRE_MIN)
-						e.state = .Diving
-					} else {
-						e.dive_timer = rand_dive_timer()
 					}
 				}
-			}
-		} // end else (non-boss)
+			} // end else (non-boss)
 
 		case .Diving:
 			e.pos.x += e.dive_vel.x * dt
@@ -723,7 +733,13 @@ update :: proc(s: ^Game_State, dt: f32) {
 
 // ---- Draw ----
 
-draw :: proc(s: ^Game_State, player_sheet: rl.Texture2D, enemy_sheet: rl.Texture2D, saucer_sheet: rl.Texture2D) {
+draw :: proc(
+	s: ^Game_State,
+	player_sheet: rl.Texture2D,
+	enemy_sheet: rl.Texture2D,
+	saucer_sheet: rl.Texture2D,
+	font: rl.Font,
+) {
 	player_origin :: rl.Vector2{f32(PLAYER_SIZE) / 2, f32(PLAYER_H) / 2}
 	enemy_origin :: rl.Vector2{ENEMY_HALF, ENEMY_HALF}
 
@@ -858,7 +874,12 @@ draw :: proc(s: ^Game_State, player_sheet: rl.Texture2D, enemy_sheet: rl.Texture
 	for e in s.enemies {
 		if !e.alive do continue
 		if e.variant == .Boss {
-			dest := rl.Rectangle{x = e.pos.x, y = e.pos.y, width = BOSS_SIZE, height = BOSS_SIZE}
+			dest := rl.Rectangle {
+				x      = e.pos.x,
+				y      = e.pos.y,
+				width  = BOSS_SIZE,
+				height = BOSS_SIZE,
+			}
 			boss_origin := rl.Vector2{BOSS_SIZE / 2, BOSS_SIZE / 2}
 			rl.DrawTexturePro(saucer_sheet, e.src, dest, boss_origin, 0, rl.WHITE)
 		} else {
@@ -880,19 +901,19 @@ draw :: proc(s: ^Game_State, player_sheet: rl.Texture2D, enemy_sheet: rl.Texture
 			bar_x := f32(SCREEN_WIDTH) / 2 - bar_w / 2
 			bar_y := f32(36)
 			hp_frac := f32(e.hp) / f32(e.max_hp)
-			rl.DrawRectangle(i32(bar_x), i32(bar_y), i32(bar_w), i32(bar_h), rl.Color{40, 0, 0, 220})
-			fill_color := hp_frac > 0.5 ? rl.Color{200, 30, 30, 255} : rl.Color{255, 80, 0, 255}
 			rl.DrawRectangle(
 				i32(bar_x),
 				i32(bar_y),
-				i32(bar_w * hp_frac),
+				i32(bar_w),
 				i32(bar_h),
-				fill_color,
+				rl.Color{40, 0, 0, 220},
 			)
+			fill_color := hp_frac > 0.5 ? rl.Color{200, 30, 30, 255} : rl.Color{255, 80, 0, 255}
+			rl.DrawRectangle(i32(bar_x), i32(bar_y), i32(bar_w * hp_frac), i32(bar_h), fill_color)
 			rl.DrawRectangleLines(i32(bar_x), i32(bar_y), i32(bar_w), i32(bar_h), rl.RED)
 			boss_label :: "BOSS"
-			lw := rl.MeasureText(boss_label, 14)
-			rl.DrawText(boss_label, SCREEN_WIDTH / 2 - lw / 2, i32(bar_y) - 18, 14, rl.RED)
+			lw := fnt_width(font, boss_label, 14)
+			fnt_draw(font, boss_label, SCREEN_WIDTH / 2 - lw / 2, i32(bar_y) - 18, 14, rl.RED)
 			break
 		}
 	}
@@ -924,7 +945,7 @@ draw :: proc(s: ^Game_State, player_sheet: rl.Texture2D, enemy_sheet: rl.Texture
 
 	// HUD
 	// ---- HUD ----
-	rl.DrawText(rl.TextFormat("SCORE %d", s.score), 10, 10, 20, rl.WHITE)
+	fnt_draw(font, rl.TextFormat("SCORE %d", s.score), 10, 10, 20, rl.WHITE)
 	if s.show_fps {
 		rl.DrawFPS(SCREEN_WIDTH - 80, 10)
 	}
@@ -943,7 +964,8 @@ draw :: proc(s: ^Game_State, player_sheet: rl.Texture2D, enemy_sheet: rl.Texture
 		rl.DrawTexturePro(player_sheet, s.player.src, life_dest, {0, 0}, 0, rl.WHITE)
 	}
 
-	rl.DrawText(
+	fnt_draw(
+		font,
 		rl.TextFormat("LV%d  W%d/%d", s.level, s.level_wave + 1, WAVES_PER_LEVEL),
 		SCREEN_WIDTH - 140,
 		SCREEN_HEIGHT - 24,
@@ -958,25 +980,26 @@ draw :: proc(s: ^Game_State, player_sheet: rl.Texture2D, enemy_sheet: rl.Texture
 
 	if s.double_shot_timer > 0 {
 		frac := s.double_shot_timer / DOUBLE_SHOT_DURATION
-		draw_powerup_icon_hud(icon_x, powerup_y, ICON, "2x", {0, 180, 220, 200}, frac)
+		draw_powerup_icon_hud(font, icon_x, powerup_y, ICON, "2x", {0, 180, 220, 200}, frac)
 		icon_x += ICON + 6
 	}
 	if s.exploding_shot_timer > 0 {
 		frac := s.exploding_shot_timer / EXPLODING_SHOT_DURATION
-		draw_powerup_icon_hud(icon_x, powerup_y, ICON, "X", {220, 80, 0, 200}, frac)
+		draw_powerup_icon_hud(font, icon_x, powerup_y, ICON, "X", {220, 80, 0, 200}, frac)
 		icon_x += ICON + 6
 	}
 	if s.seeking_shot_timer > 0 {
 		frac := s.seeking_shot_timer / SEEKING_SHOT_DURATION
-		draw_powerup_icon_hud(icon_x, powerup_y, ICON, "S", {180, 80, 255, 200}, frac)
+		draw_powerup_icon_hud(font, icon_x, powerup_y, ICON, "S", {180, 80, 255, 200}, frac)
 	}
 
 	if s.extra_life_flash > 0 {
 		fade := min(s.extra_life_flash / 0.5, f32(1.0))
 		alpha := u8(fade * 255)
 		msg :: "EXTRA LIFE!"
-		mw := rl.MeasureText(msg, 28)
-		rl.DrawText(
+		mw := fnt_width(font, msg, 28)
+		fnt_draw(
+			font,
 			msg,
 			SCREEN_WIDTH / 2 - mw / 2,
 			SCREEN_HEIGHT * 3 / 4,
@@ -988,27 +1011,25 @@ draw :: proc(s: ^Game_State, player_sheet: rl.Texture2D, enemy_sheet: rl.Texture
 	if s.wave_clear_timer > 0 {
 		if s.level_clear_pending {
 			msg :: "LEVEL CLEAR!"
-			mw := rl.MeasureText(msg, 42)
-			rl.DrawText(msg, SCREEN_WIDTH / 2 - mw / 2, SCREEN_HEIGHT / 2 - 24, 42, rl.GOLD)
+			mw := fnt_width(font, msg, 42)
+			fnt_draw(font, msg, SCREEN_WIDTH / 2 - mw / 2, SCREEN_HEIGHT / 2 - 24, 42, rl.GOLD)
 		} else {
 			msg :: "WAVE CLEAR"
-			mw := rl.MeasureText(msg, 36)
-			rl.DrawText(msg, SCREEN_WIDTH / 2 - mw / 2, SCREEN_HEIGHT / 2 - 18, 36, rl.GREEN)
+			mw := fnt_width(font, msg, 36)
+			fnt_draw(font, msg, SCREEN_WIDTH / 2 - mw / 2, SCREEN_HEIGHT / 2 - 18, 36, rl.GREEN)
 		}
 	}
 
 	if s.game_over {
-		rl.DrawText("GAME OVER", SCREEN_WIDTH / 2 - 90, SCREEN_HEIGHT / 2 - 20, 40, rl.RED)
-		rl.DrawText(
-			"Press R to restart",
-			SCREEN_WIDTH / 2 - 100,
-			SCREEN_HEIGHT / 2 + 30,
-			20,
-			rl.WHITE,
-		)
+		msg1 :: "GAME OVER"
+		mw1 := fnt_width(font, msg1, 40)
+		fnt_draw(font, msg1, SCREEN_WIDTH / 2 - mw1 / 2, SCREEN_HEIGHT / 2 - 24, 40, rl.RED)
+		msg2 :: "Press R to restart"
+		mw2 := fnt_width(font, msg2, 20)
+		fnt_draw(font, msg2, SCREEN_WIDTH / 2 - mw2 / 2, SCREEN_HEIGHT / 2 + 30, 20, rl.WHITE)
 	}
 
-	draw_settings_menu(s)
+	draw_settings_menu(s, font)
 
 	rl.EndDrawing()
 }
@@ -1045,21 +1066,19 @@ enemy_fire :: proc(s: ^Game_State, e: ^Enemy) {
 		// Fan of bullets aimed at the player; more shots at low HP
 		hp_frac := f32(e.hp) / f32(e.max_hp)
 		count := BOSS_SPREAD_HIGH if hp_frac > 0.5 else BOSS_SPREAD_LOW
-		base_angle := math.atan2(
-			s.player.pos.y - e.pos.y,
-			s.player.pos.x - e.pos.x,
-		)
+		base_angle := math.atan2(s.player.pos.y - e.pos.y, s.player.pos.x - e.pos.x)
 		step := f32(BOSS_SPREAD_STEP) * math.PI / 180.0
 		half := f32(count / 2)
 		for i in 0 ..< count {
 			a := base_angle + (f32(i) - half) * step
-			vel := rl.Vector2 {
-				math.cos(a) * ENEMY_BULLET_SPEED,
-				math.sin(a) * ENEMY_BULLET_SPEED,
-			}
+			vel := rl.Vector2{math.cos(a) * ENEMY_BULLET_SPEED, math.sin(a) * ENEMY_BULLET_SPEED}
 			for &b in s.enemy_bullets {
 				if !b.alive {
-					b = {pos = e.pos, vel = vel, alive = true}
+					b = {
+						pos   = e.pos,
+						vel   = vel,
+						alive = true,
+					}
 					break
 				}
 			}
@@ -1067,8 +1086,22 @@ enemy_fire :: proc(s: ^Game_State, e: ^Enemy) {
 	}
 }
 
+// Font helpers — thin wrappers so call sites stay concise
+fnt_draw :: proc(font: rl.Font, text: cstring, x, y, size: i32, color: rl.Color) {
+	rl.DrawTextEx(font, text, {f32(x), f32(y)}, f32(size), FONT_SPACING, color)
+}
+fnt_width :: proc(font: rl.Font, text: cstring, size: i32) -> i32 {
+	return i32(rl.MeasureTextEx(font, text, f32(size), FONT_SPACING).x)
+}
+
 // Internal helper for powerup icons in HUD
-draw_powerup_icon_hud :: proc(x, y, size: i32, label: cstring, color: rl.Color, frac: f32) {
+draw_powerup_icon_hud :: proc(
+	font: rl.Font,
+	x, y, size: i32,
+	label: cstring,
+	color: rl.Color,
+	frac: f32,
+) {
 	// Full colored background
 	rl.DrawRectangle(x, y, size, size, color)
 	// Grey overlay fills down from top as frac decreases (frac=1 full, frac=0 empty)
@@ -1081,7 +1114,8 @@ draw_powerup_icon_hud :: proc(x, y, size: i32, label: cstring, color: rl.Color, 
 	rl.DrawRectangle(x, line_y - 1, size, 2, rl.WHITE)
 	// Border and label
 	rl.DrawRectangleLines(x, y, size, size, rl.WHITE)
-	rl.DrawText(label, x + size / 2 - 6, y + size / 2 - 6, 14, rl.WHITE)
+	lw := fnt_width(font, label, 14)
+	fnt_draw(font, label, x + size / 2 - lw / 2, y + size / 2 - 7, 14, rl.WHITE)
 }
 
 // ---- Helpers ----
