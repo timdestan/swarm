@@ -75,15 +75,21 @@ SEEKING_SHOT_SCORE :: 150
 SEEKING_TURN_RATE :: 6.5 // radians per second
 
 // Boss
-BOSS_HP_BASE :: 8
+BOSS_HP_BASE :: 40
 BOSS_SIZE :: 80           // display size
 BOSS_HALF :: f32(36)      // hitbox half-size
 BOSS_SCORE :: 1000
-BOSS_FIRE_RATE_HIGH :: 2.0
-BOSS_FIRE_RATE_LOW :: 1.0
-BOSS_SPREAD_HIGH :: 5     // shots per volley when hp > 50%
-BOSS_SPREAD_LOW :: 7      // shots per volley when hp <= 50%
-BOSS_SPREAD_STEP :: 20.0  // degrees between shots
+BOSS_FIRE_RATE_HIGH :: 1.0  // volley every 1 s above 50% HP
+BOSS_FIRE_RATE_LOW :: 0.5   // volley every 0.5 s below 50% HP
+BOSS_SPREAD_HIGH :: 7     // shots per volley when hp > 50%
+BOSS_SPREAD_LOW :: 11     // shots per volley when hp <= 50%
+BOSS_SPREAD_STEP :: 18.0  // degrees between shots
+
+// Extra lives
+EXTRA_LIFE_THRESHOLD_START :: 10_000
+EXTRA_LIFE_GAP_START       :: 10_000 // gap between first and second award
+EXTRA_LIFE_GAP_INCREASE    :: 5_000  // each award widens the next gap by this much
+EXTRA_LIFE_FLASH_DURATION  :: 2.5
 
 // Level progression
 WAVES_PER_LEVEL :: 3      // waves per level, last is always boss
@@ -111,7 +117,7 @@ LEVEL_DATA := [NUM_LEVELS][WAVES_PER_LEVEL]Wave_Config{
 	{ // Level 2
 		{rows = 5, variant_weights = {50, 30, 20, 0}},
 		{rows = 6, variant_weights = {30, 30, 20, 20}},
-		{is_boss = true, boss_hp = BOSS_HP_BASE + 5},
+		{is_boss = true, boss_hp = BOSS_HP_BASE + 15},
 	},
 }
 
@@ -188,6 +194,7 @@ Enemy :: struct {
 	burst_timer: f32,
 	hp:          int,
 	max_hp:      int,
+	sway_t:      f32, // boss-only: independent time for smooth oscillation
 }
 
 Enemy_Bullet :: struct {
@@ -241,6 +248,9 @@ Game_State :: struct {
 	level_wave:           int, // 0-indexed within current level
 	boss_wave:            bool,
 	level_clear_pending:  bool, // true while clearing a boss wave
+	extra_life_threshold: int,
+	extra_life_gap:       int,
+	extra_life_flash:     f32,
 }
 
 // ---- Main ----
@@ -293,6 +303,8 @@ init_game :: proc(volume: f32) -> Game_State {
 	config := LEVEL_DATA[0][0]
 	s.enemies = init_wave(config, 1)
 	s.boss_wave = config.is_boss
+	s.extra_life_threshold = EXTRA_LIFE_THRESHOLD_START
+	s.extra_life_gap = EXTRA_LIFE_GAP_START
 	for &star in s.stars {star = random_star(spread = true)}
 	s.volume = volume
 	return s
@@ -470,13 +482,17 @@ update :: proc(s: ^Game_State, dt: f32) {
 				e.fire_timer = rand_fire_timer(e.wave)
 			}
 			base := bezier2(e.enter_t, e.enter_from, e.enter_ctrl, e.slot)
-			e.pos = {base.x + drift_offset * e.enter_t, base.y}
+			// Boss enters straight to slot; regular enemies sway with drift
+			x_off := e.variant == .Boss ? f32(0) : drift_offset * e.enter_t
+			e.pos = {base.x + x_off, base.y}
 
 		case .Formation:
 			if e.variant == .Boss {
-				// Boss sways widely across the top
-				e.pos.x = e.slot.x + math.sin(s.drift_time * math.TAU / 3.2) * 280
-				e.pos.y = e.slot.y + math.sin(s.drift_time * math.TAU / 5.7) * 28
+				// Use a private timer so sway always starts at centre (sin(0)=0)
+				// and is independent of how long the session has been running.
+				e.sway_t += dt
+				e.pos.x = e.slot.x + math.sin(e.sway_t * math.TAU / 5.5) * 210
+				e.pos.y = e.slot.y + math.sin(e.sway_t * math.TAU / 8.0) * 18
 				e.fire_timer -= dt
 				if e.fire_timer <= 0 {
 					enemy_fire(s, &e)
@@ -648,6 +664,15 @@ update :: proc(s: ^Game_State, dt: f32) {
 				}
 			}
 		}
+	}
+
+	// --- Extra life ---
+	if s.extra_life_flash > 0 {s.extra_life_flash -= dt}
+	for !s.game_over && s.score >= s.extra_life_threshold {
+		s.lives += 1
+		s.extra_life_flash = EXTRA_LIFE_FLASH_DURATION
+		s.extra_life_threshold += s.extra_life_gap
+		s.extra_life_gap += EXTRA_LIFE_GAP_INCREASE
 	}
 
 	// --- Wave clear ---
@@ -899,7 +924,7 @@ draw :: proc(s: ^Game_State, player_sheet: rl.Texture2D, enemy_sheet: rl.Texture
 
 	// Active powerup icons — directly right of the lives row, same bottom baseline
 	ICON :: i32(40)
-	icon_x := 10 + PLAYER_LIVES * LIFE_STEP + 8
+	icon_x := 10 + i32(s.lives) * LIFE_STEP + 8
 	powerup_y := i32(SCREEN_HEIGHT) - ICON - 10
 
 	if s.double_shot_timer > 0 {
@@ -915,6 +940,20 @@ draw :: proc(s: ^Game_State, player_sheet: rl.Texture2D, enemy_sheet: rl.Texture
 	if s.seeking_shot_timer > 0 {
 		frac := s.seeking_shot_timer / SEEKING_SHOT_DURATION
 		draw_powerup_icon_hud(icon_x, powerup_y, ICON, "S", {180, 80, 255, 200}, frac)
+	}
+
+	if s.extra_life_flash > 0 {
+		fade := min(s.extra_life_flash / 0.5, f32(1.0))
+		alpha := u8(fade * 255)
+		msg :: "EXTRA LIFE!"
+		mw := rl.MeasureText(msg, 28)
+		rl.DrawText(
+			msg,
+			SCREEN_WIDTH / 2 - mw / 2,
+			SCREEN_HEIGHT * 3 / 4,
+			28,
+			rl.Color{80, 255, 130, alpha},
+		)
 	}
 
 	if s.wave_clear_timer > 0 {
@@ -1026,7 +1065,7 @@ spawn_bullet :: proc(
 	is_seeking: bool,
 ) {
 	spd := f32(ROCKET_SPEED) if is_rocket else f32(BULLET_SPEED)
-	vel := rl.Vector2{player_vel.x, -spd}
+	vel := rl.Vector2{player_vel.x * 0.2, -spd}
 	for &b in bullets {
 		if !b.alive {
 			b = {
