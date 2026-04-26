@@ -75,6 +75,8 @@ EXPLODING_SHOT_SCORE :: 75
 SEEKING_SHOT_DURATION :: 10.0
 SEEKING_SHOT_SCORE :: 150
 SEEKING_TURN_RATE :: 6.5 // radians per second
+PIERCING_SHOT_DURATION :: 10.0
+PIERCING_SHOT_SCORE :: 100
 
 FONT_PATH :: "assets/orbitron_font.ttf"
 FONT_SIZE :: i32(64) // rasterise large; scale down at draw time
@@ -134,6 +136,7 @@ Powerup_Type :: enum {
 	Score_Bonus,
 	Exploding_Shot,
 	Seeking_Shot,
+	Piercing_Shot,
 }
 
 Powerup :: struct {
@@ -166,11 +169,12 @@ Player :: struct {
 }
 
 Player_Bullet :: struct {
-	pos:        rl.Vector2,
-	vel:        rl.Vector2,
-	is_rocket:  bool,
-	is_seeking: bool,
-	alive:      bool,
+	pos:         rl.Vector2,
+	vel:         rl.Vector2,
+	is_rocket:   bool,
+	is_seeking:  bool,
+	is_piercing: bool,
+	alive:       bool,
 }
 
 Enemy_Variant :: enum {
@@ -252,6 +256,7 @@ Game_State :: struct {
 	double_shot_timer:    f32,
 	exploding_shot_timer: f32,
 	seeking_shot_timer:   f32,
+	piercing_shot_timer:  f32,
 	paused:               bool,
 	volume:               f32,
 	quit_game:            bool,
@@ -368,6 +373,7 @@ update :: proc(s: ^Game_State, dt: f32) {
 		if (rl.IsKeyDown(.SPACE) || rl.IsKeyDown(.LEFT_CONTROL)) && s.shoot_timer <= 0 {
 			rocket := s.exploding_shot_timer > 0
 			seeking := s.seeking_shot_timer > 0
+			piercing := s.piercing_shot_timer > 0
 			if s.double_shot_timer > 0 {
 				spawn_bullet(
 					&s.bullets,
@@ -375,6 +381,7 @@ update :: proc(s: ^Game_State, dt: f32) {
 					s.player.vel,
 					rocket,
 					seeking,
+					piercing,
 				)
 				spawn_bullet(
 					&s.bullets,
@@ -382,9 +389,10 @@ update :: proc(s: ^Game_State, dt: f32) {
 					s.player.vel,
 					rocket,
 					seeking,
+					piercing,
 				)
 			} else {
-				spawn_bullet(&s.bullets, s.player.pos, s.player.vel, rocket, seeking)
+				spawn_bullet(&s.bullets, s.player.pos, s.player.vel, rocket, seeking, piercing)
 			}
 			s.shoot_timer = SHOOT_COOLDOWN
 		}
@@ -409,6 +417,7 @@ update :: proc(s: ^Game_State, dt: f32) {
 	if s.double_shot_timer > 0 {s.double_shot_timer -= dt}
 	if s.exploding_shot_timer > 0 {s.exploding_shot_timer -= dt}
 	if s.seeking_shot_timer > 0 {s.seeking_shot_timer -= dt}
+	if s.piercing_shot_timer > 0 {s.piercing_shot_timer -= dt}
 
 	// --- Update & collect powerups ---
 	for &p in s.powerups {
@@ -434,6 +443,9 @@ update :: proc(s: ^Game_State, dt: f32) {
 			case .Seeking_Shot:
 				s.seeking_shot_timer = SEEKING_SHOT_DURATION
 				s.score += SEEKING_SHOT_SCORE
+			case .Piercing_Shot:
+				s.piercing_shot_timer = PIERCING_SHOT_DURATION
+				s.score += PIERCING_SHOT_SCORE
 			}
 		}
 	}
@@ -646,19 +658,23 @@ update :: proc(s: ^Game_State, dt: f32) {
 			if !e.alive do continue
 			hit_half := BOSS_HALF if e.variant == .Boss else f32(ENEMY_HALF)
 			if abs(b.pos.x - e.pos.x) < hit_half && abs(b.pos.y - e.pos.y) < hit_half {
-				b.alive = false
 				e.hp -= 1
 				if e.hp > 0 {
+					// Multi-HP enemy (boss) absorbed the hit — bullet is consumed
+					b.alive = false
 					spawn_hit_flash(&s.hit_flashes, b.pos)
-					continue // boss survives the hit
+					continue
 				}
 				e.alive = false
+				// Piercing bullets survive a kill; exploding shots always detonate and are consumed
+				if !b.is_piercing {b.alive = false}
 				s.score += BOSS_SCORE if e.variant == .Boss else 100
 				spawn_explosion(&s.particles, e.pos)
 				if e.variant != .Boss && rl.GetRandomValue(0, 99) < POWERUP_DROP_CHANCE {
 					drop_powerup(&s.powerups, e.pos)
 				}
 				if s.exploding_shot_timer > 0 {
+					b.alive = false
 					spawn_blast(&s.blasts, e.pos)
 					for &other in s.enemies {
 						if !other.alive do continue
@@ -982,6 +998,11 @@ draw :: proc(
 	if s.seeking_shot_timer > 0 {
 		frac := s.seeking_shot_timer / SEEKING_SHOT_DURATION
 		draw_powerup_icon_hud(font, icon_x, powerup_y, ICON, "S", {180, 80, 255, 200}, frac)
+		icon_x += ICON + 6
+	}
+	if s.piercing_shot_timer > 0 {
+		frac := s.piercing_shot_timer / PIERCING_SHOT_DURATION
+		draw_powerup_icon_hud(font, icon_x, powerup_y, ICON, "P", {160, 220, 255, 200}, frac)
 	}
 
 	if s.extra_life_flash > 0 {
@@ -1118,6 +1139,7 @@ kill_player :: proc(s: ^Game_State) {
 	s.double_shot_timer = 0
 	s.exploding_shot_timer = 0
 	s.seeking_shot_timer = 0
+	s.piercing_shot_timer = 0
 	spawn_explosion(&s.particles, s.player.pos)
 }
 
@@ -1127,17 +1149,19 @@ spawn_bullet :: proc(
 	player_vel: rl.Vector2,
 	is_rocket: bool,
 	is_seeking: bool,
+	is_piercing: bool,
 ) {
 	spd := f32(ROCKET_SPEED) if is_rocket else f32(BULLET_SPEED)
 	vel := rl.Vector2{player_vel.x * 0.2, -spd}
 	for &b in bullets {
 		if !b.alive {
 			b = {
-				pos        = pos,
-				vel        = vel,
-				is_rocket  = is_rocket,
-				is_seeking = is_seeking,
-				alive      = true,
+				pos         = pos,
+				vel         = vel,
+				is_rocket   = is_rocket,
+				is_seeking  = is_seeking,
+				is_piercing = is_piercing,
+				alive       = true,
 			}
 			return
 		}
@@ -1150,6 +1174,7 @@ POWERUP_WEIGHTS :: []int {
 	int(Powerup_Type.Score_Bonus) = 70,
 	int(Powerup_Type.Exploding_Shot) = 5,
 	int(Powerup_Type.Seeking_Shot) = 3,
+	int(Powerup_Type.Piercing_Shot) = 8,
 }
 
 drop_powerup :: proc(powerups: ^[MAX_POWERUPS]Powerup, pos: rl.Vector2) {
@@ -1189,6 +1214,8 @@ powerup_color :: proc(type: Powerup_Type) -> rl.Color {
 		return {220, 80, 0, 200}
 	case .Seeking_Shot:
 		return {180, 80, 255, 200}
+	case .Piercing_Shot:
+		return {160, 220, 255, 200}
 	}
 	return rl.WHITE
 }
@@ -1203,6 +1230,8 @@ powerup_label :: proc(type: Powerup_Type) -> cstring {
 		return "X"
 	case .Seeking_Shot:
 		return "S"
+	case .Piercing_Shot:
+		return "P"
 	}
 	return "?"
 }
