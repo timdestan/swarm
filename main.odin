@@ -168,13 +168,18 @@ Player :: struct {
 	src: rl.Rectangle,
 }
 
+Bullet_Flag :: enum {
+	Rocket,
+	Seeking,
+	Piercing,
+}
+Bullet_Flags :: bit_set[Bullet_Flag]
+
 Player_Bullet :: struct {
-	pos:         rl.Vector2,
-	vel:         rl.Vector2,
-	is_rocket:   bool,
-	is_seeking:  bool,
-	is_piercing: bool,
-	alive:       bool,
+	pos:   rl.Vector2,
+	vel:   rl.Vector2,
+	flags: Bullet_Flags,
+	alive: bool,
 }
 
 Enemy_Variant :: enum {
@@ -371,28 +376,25 @@ update :: proc(s: ^Game_State, dt: f32) {
 
 		s.shoot_timer -= dt
 		if (rl.IsKeyDown(.SPACE) || rl.IsKeyDown(.LEFT_CONTROL)) && s.shoot_timer <= 0 {
-			rocket := s.exploding_shot_timer > 0
-			seeking := s.seeking_shot_timer > 0
-			piercing := s.piercing_shot_timer > 0
+			flags: Bullet_Flags
+			if s.exploding_shot_timer > 0 {flags += {.Rocket}}
+			if s.seeking_shot_timer > 0 {flags += {.Seeking}}
+			if s.piercing_shot_timer > 0 {flags += {.Piercing}}
 			if s.double_shot_timer > 0 {
 				spawn_bullet(
 					&s.bullets,
 					{s.player.pos.x - DOUBLE_SHOT_SPREAD, s.player.pos.y},
 					s.player.vel,
-					rocket,
-					seeking,
-					piercing,
+					flags,
 				)
 				spawn_bullet(
 					&s.bullets,
 					{s.player.pos.x + DOUBLE_SHOT_SPREAD, s.player.pos.y},
 					s.player.vel,
-					rocket,
-					seeking,
-					piercing,
+					flags,
 				)
 			} else {
-				spawn_bullet(&s.bullets, s.player.pos, s.player.vel, rocket, seeking, piercing)
+				spawn_bullet(&s.bullets, s.player.pos, s.player.vel, flags)
 			}
 			s.shoot_timer = SHOOT_COOLDOWN
 		}
@@ -454,7 +456,7 @@ update :: proc(s: ^Game_State, dt: f32) {
 	for &b in s.bullets {
 		if !b.alive do continue
 
-		if b.is_seeking {
+		if .Seeking in b.flags {
 			update_seeking_bullet(s, &b, dt)
 		}
 
@@ -667,7 +669,7 @@ update :: proc(s: ^Game_State, dt: f32) {
 				}
 				e.alive = false
 				// Piercing bullets survive a kill; exploding shots always detonate and are consumed
-				if !b.is_piercing {b.alive = false}
+				if .Piercing not_in b.flags {b.alive = false}
 				s.score += BOSS_SCORE if e.variant == .Boss else 100
 				spawn_explosion(&s.particles, e.pos)
 				if e.variant != .Boss && rl.GetRandomValue(0, 99) < POWERUP_DROP_CHANCE {
@@ -837,7 +839,7 @@ draw :: proc(
 		dx := b.vel.x / spd
 		dy := b.vel.y / spd
 
-		if b.is_rocket {
+		if .Rocket in b.flags {
 			// Rocket: exhaust flame behind, wide body, bright warhead at front
 			// Positive offset = behind the tip (b.pos), negative = ahead
 			seg_off := [5]f32{32, 22, 12, 2, -4}
@@ -1147,22 +1149,13 @@ spawn_bullet :: proc(
 	bullets: ^[MAX_BULLETS]Player_Bullet,
 	pos: rl.Vector2,
 	player_vel: rl.Vector2,
-	is_rocket: bool,
-	is_seeking: bool,
-	is_piercing: bool,
+	flags: Bullet_Flags,
 ) {
-	spd := f32(ROCKET_SPEED) if is_rocket else f32(BULLET_SPEED)
+	spd := f32(ROCKET_SPEED) if .Rocket in flags else f32(BULLET_SPEED)
 	vel := rl.Vector2{player_vel.x * 0.2, -spd}
 	for &b in bullets {
 		if !b.alive {
-			b = {
-				pos         = pos,
-				vel         = vel,
-				is_rocket   = is_rocket,
-				is_seeking  = is_seeking,
-				is_piercing = is_piercing,
-				alive       = true,
-			}
+			b = {pos = pos, vel = vel, flags = flags, alive = true}
 			return
 		}
 	}
