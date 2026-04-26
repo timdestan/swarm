@@ -619,10 +619,7 @@ update :: proc(s: ^Game_State, dt: f32) {
 			if abs(b.pos.x - s.player.pos.x) < PLAYER_HALF &&
 			   abs(b.pos.y - s.player.pos.y) < PLAYER_HALF {
 				b.alive = false
-				s.lives -= 1
-				s.player_dead = true
-				s.respawn_timer = RESPAWN_DELAY
-				spawn_explosion(&s.particles, s.player.pos)
+				kill_player(s)
 				break
 			}
 		}
@@ -635,10 +632,7 @@ update :: proc(s: ^Game_State, dt: f32) {
 			if abs(e.pos.x - s.player.pos.x) < f32(PLAYER_HALF + ENEMY_HALF) &&
 			   abs(e.pos.y - s.player.pos.y) < f32(PLAYER_HALF + ENEMY_HALF) {
 				e.alive = false
-				s.lives -= 1
-				s.player_dead = true
-				s.respawn_timer = RESPAWN_DELAY
-				spawn_explosion(&s.particles, s.player.pos)
+				kill_player(s)
 				spawn_explosion(&s.particles, e.pos)
 				break
 			}
@@ -684,10 +678,7 @@ update :: proc(s: ^Game_State, dt: f32) {
 						dx := s.player.pos.x - e.pos.x
 						dy := s.player.pos.y - e.pos.y
 						if dx * dx + dy * dy < EXPLODING_SHOT_RADIUS * EXPLODING_SHOT_RADIUS {
-							s.lives -= 1
-							s.player_dead = true
-							s.respawn_timer = RESPAWN_DELAY
-							spawn_explosion(&s.particles, s.player.pos)
+							kill_player(s)
 						}
 					}
 				}
@@ -1119,6 +1110,16 @@ draw_powerup_icon_hud :: proc(
 }
 
 // ---- Helpers ----
+
+kill_player :: proc(s: ^Game_State) {
+	s.lives -= 1
+	s.player_dead = true
+	s.respawn_timer = RESPAWN_DELAY
+	s.double_shot_timer = 0
+	s.exploding_shot_timer = 0
+	s.seeking_shot_timer = 0
+	spawn_explosion(&s.particles, s.player.pos)
+}
 
 spawn_bullet :: proc(
 	bullets: ^[MAX_BULLETS]Player_Bullet,
